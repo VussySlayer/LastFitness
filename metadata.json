@@ -1,0 +1,8 @@
+{
+  "name": "Remix: FlexSync",
+  "description": "A dark-themed workout collaboration platform to schedule sessions, track user stats, and join group workouts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
