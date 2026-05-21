@@ -29,6 +29,9 @@ import {
   MessageSquare,
   Activity,
   Loader2,
+  Edit,
+  Trash2,
+  X,
 } from "lucide-react";
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
@@ -489,6 +492,39 @@ export default function App() {
       return [];
     }
   });
+  const [researchPapers, setResearchPapers] = useState<{ id: string; title: string; author: string; date: string; url?: string; summary?: string }[]>(() => {
+    try {
+      const stored = localStorage.getItem("flexsync_research");
+      return stored ? JSON.parse(stored) : [
+        {
+          id: "res_1",
+          title: "Hypertrophy Mechanisms",
+          author: "Schoenfeld et al.",
+          date: "2024",
+          url: "https://journals.lww.com/nsca-jscr/fulltext/2010/10000/the_mechanisms_of_muscle_hypertrophy_and_their.40.aspx",
+          summary: "The primary mechanisms inducing muscle hypertrophy are mechanical tension, muscle damage, and metabolic stress."
+        },
+        {
+          id: "res_2",
+          title: "Volume vs Intensity Meta-Analysis",
+          author: "Nuckols et al.",
+          date: "2023",
+          url: "https://www.strongerbyscience.com/hypertrophy-meta-analysis/",
+          summary: "A systematic review comparing high vs low training loads, showing both can achieve similar hypertrophy if sets are taken close to failure."
+        },
+        {
+          id: "res_3",
+          title: "The Anabolic Window Myth",
+          author: "Aragon/Helms",
+          date: "2024",
+          url: "https://jissn.biomedcentral.com/articles/10.1186/1550-2783-10-53",
+          summary: "Examines nutrient timing pre and post workout, finding that the 'anabolic window' is much broader than previously claimed (4-6 hours)."
+        }
+      ];
+    } catch {
+      return [];
+    }
+  });
   const [weightEntries, setWeightEntries] = useState<WeightEntry[]>(() => {
     try {
       const storedV2 = localStorage.getItem("flexsync_weights_v2");
@@ -825,6 +861,23 @@ export default function App() {
             }
           })
           .catch((e) => console.warn("GAS Weight Fetch failed", e));
+
+        fetch(gasUrl, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify({
+            action: "getResearch",
+            data: {},
+          }),
+        })
+          .then((r) => r.json())
+          .then((res) => {
+            if (res.success && res.data) {
+              setResearchPapers(res.data);
+              localStorage.setItem("flexsync_research", JSON.stringify(res.data));
+            }
+          })
+          .catch((e) => console.warn("GAS Research Fetch failed", e));
       }
     },
     [db, useGoogleSheets, gasUrl, user?.uid, user?.email],
@@ -855,6 +908,7 @@ export default function App() {
     let unsubscribeTemp = () => {};
     let unsubscribePrs = () => {};
     let unsubscribeWeight = () => {};
+    let unsubscribeResearch = () => {};
 
     const isFirebaseDummy = !db || db.app.options.apiKey.includes("dummy");
 
@@ -899,6 +953,17 @@ export default function App() {
           (doc) => ({ id: doc.id, ...doc.data() }) as PersonalRecord,
         );
         setPrs(docs);
+      });
+
+      const qRes = query(collection(db, "research"));
+      unsubscribeResearch = onSnapshot(qRes, (snapshot) => {
+        const docs = snapshot.docs.map(
+          (doc) => ({ id: doc.id, ...doc.data() }) as any,
+        );
+        if (docs.length > 0) {
+          setResearchPapers(docs);
+          localStorage.setItem("flexsync_research", JSON.stringify(docs));
+        }
       });
 
       const qWeight = query(
@@ -954,6 +1019,7 @@ export default function App() {
       unsubscribeTemp();
       unsubscribePrs();
       unsubscribeWeight();
+      unsubscribeResearch();
     };
   }, [user?.uid, db, useGoogleSheets, authReady]);
 
@@ -1528,7 +1594,7 @@ export default function App() {
       .filter((s) => {
         const sTime =
           s.startTime instanceof Date ? s.startTime : new Date(s.startTime);
-        return !isNaN(sTime.getTime()) && sTime < new Date();
+        return !isNaN(sTime.getTime()) && sTime <= new Date();
       })
       .sort((a, b) => {
         const aTime =
@@ -1543,16 +1609,31 @@ export default function App() {
       });
 
     const lastSession = pastSessions.length > 0 ? pastSessions[0] : null;
-    const lastSessionTime = lastSession
-      ? lastSession.startTime instanceof Date
-        ? lastSession.startTime.getTime()
-        : new Date(lastSession.startTime).getTime()
-      : null;
-    const daysSince = lastSessionTime
-      ? Math.floor(
-          (new Date().getTime() - lastSessionTime) / (1000 * 3600 * 24),
-        )
-      : null;
+    let daysSince = null;
+    let lastWorkoutDate = "-";
+    let lastWorkoutTitle = "";
+
+    if (lastSession) {
+      const sTime = lastSession.startTime instanceof Date ? lastSession.startTime : new Date(lastSession.startTime);
+      const lastSessionStart = new Date(sTime.getFullYear(), sTime.getMonth(), sTime.getDate());
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const diffTime = todayStart.getTime() - lastSessionStart.getTime();
+      daysSince = Math.round(diffTime / (1000 * 3600 * 24));
+      
+      try {
+        if (daysSince === 0) {
+          lastWorkoutDate = `Today (${format(sTime, "h:mm a")})`;
+        } else if (daysSince === 1) {
+          lastWorkoutDate = `Yesterday`;
+        } else {
+          lastWorkoutDate = format(sTime, "MMM d, yyyy");
+        }
+      } catch (e) {
+        lastWorkoutDate = sTime.toLocaleDateString();
+      }
+      lastWorkoutTitle = lastSession.title || "Workout Session";
+    }
 
     // This week upcoming workout
     const thisWeekStart = new Date();
@@ -1593,6 +1674,8 @@ export default function App() {
       topBuddy: topBuddyName,
       buddyId: topBuddyId,
       daysSinceLast: daysSince,
+      lastWorkoutDate,
+      lastWorkoutTitle,
       nextWorkout: nextWorkout,
       bestPr: bestPr,
     };
@@ -1603,6 +1686,112 @@ export default function App() {
     sessionStorage.removeItem("grind_user");
     setUser(null);
     setIsAdmin(false);
+  };
+
+  const handleAddResearchPaper = async (paperData: { title: string; author: string; date: string; url?: string; summary?: string }) => {
+    const isFirebaseDummy = !db || db.app.options.apiKey.includes("dummy");
+    const nextRes = { id: "res_" + Date.now(), ...paperData };
+    
+    // 1. UPDATE STATE & LOCALSTORAGE
+    setResearchPapers((prev) => {
+      const updated = [nextRes, ...prev.filter(p => p.id !== nextRes.id)];
+      localStorage.setItem("flexsync_research", JSON.stringify(updated));
+      return updated;
+    });
+
+    // 2. CLOUD SYNC
+    if (useGoogleSheets || isFirebaseDummy) {
+      if (gasUrl) {
+        try {
+          await fetch(gasUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "saveResearch",
+              data: nextRes,
+            }),
+          });
+        } catch (e) {
+          console.warn("GAS save research error", e);
+        }
+      }
+    } else {
+      try {
+        await setDoc(doc(db, "research", nextRes.id), nextRes);
+      } catch (e) {
+        console.error("Firebase save research error", e);
+      }
+    }
+  };
+
+  const handleUpdateResearchPaper = async (paperData: { id: string; title: string; author: string; date: string; url?: string; summary?: string }) => {
+    const isFirebaseDummy = !db || db.app.options.apiKey.includes("dummy");
+    
+    // 1. UPDATE STATE & LOCALSTORAGE
+    setResearchPapers((prev) => {
+      const updated = prev.map(p => p.id === paperData.id ? paperData : p);
+      localStorage.setItem("flexsync_research", JSON.stringify(updated));
+      return updated;
+    });
+
+    // 2. CLOUD SYNC
+    if (useGoogleSheets || isFirebaseDummy) {
+      if (gasUrl) {
+        try {
+          await fetch(gasUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "saveResearch",
+              data: paperData,
+            }),
+          });
+        } catch (e) {
+          console.warn("GAS update research error", e);
+        }
+      }
+    } else {
+      try {
+        await setDoc(doc(db, "research", paperData.id), paperData);
+      } catch (e) {
+        console.error("Firebase update research error", e);
+      }
+    }
+  };
+
+  const handleDeleteResearchPaper = async (id: string) => {
+    const isFirebaseDummy = !db || db.app.options.apiKey.includes("dummy");
+    
+    // 1. UPDATE STATE & LOCALSTORAGE
+    setResearchPapers((prev) => {
+      const updated = prev.filter(p => p.id !== id);
+      localStorage.setItem("flexsync_research", JSON.stringify(updated));
+      return updated;
+    });
+
+    // 2. CLOUD SYNC
+    if (useGoogleSheets || isFirebaseDummy) {
+      if (gasUrl) {
+        try {
+          await fetch(gasUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "deleteResearch",
+              data: { id },
+            }),
+          });
+        } catch (e) {
+          console.warn("GAS delete research error", e);
+        }
+      }
+    } else {
+      try {
+        await deleteDoc(doc(db, "research", id));
+      } catch (e) {
+        console.error("Firebase delete research error", e);
+      }
+    }
   };
 
   if (!authReady)
@@ -1766,12 +1955,15 @@ export default function App() {
                 <Clock size={12} className="text-green-500 shrink-0" />
                 <span className="text-[9px] font-bold uppercase tracking-wider text-dark-text-muted">Last Done</span>
               </div>
-              <div className="text-right">
-                <span className="text-xs font-black text-green-500 font-sans">
-                  {grindStats.daysSinceLast !== null
-                    ? `${grindStats.daysSinceLast} ${grindStats.daysSinceLast === 1 ? "day ago" : "days ago"}`
-                    : "-"}
+              <div className="text-right flex flex-col items-end min-w-0">
+                <span className="text-xs font-black text-green-500 font-sans truncate max-w-[140px]">
+                  {grindStats.lastWorkoutDate || "-"}
                 </span>
+                {grindStats.lastWorkoutTitle && (
+                  <span className="text-[8px] font-bold text-dark-text-muted uppercase tracking-tight truncate max-w-[140px] mt-0.5 leading-none">
+                    {grindStats.lastWorkoutTitle}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -2089,12 +2281,15 @@ export default function App() {
                           <Clock size={12} className="text-green-500 shrink-0" />
                           <span className="text-[9px] font-bold uppercase tracking-wider text-dark-text-muted">Last Done</span>
                         </div>
-                        <div className="text-right">
-                          <span className="text-xs font-black text-green-500 font-sans">
-                            {grindStats.daysSinceLast !== null
-                              ? `${grindStats.daysSinceLast} ${grindStats.daysSinceLast === 1 ? "day ago" : "days ago"}`
-                              : "-"}
+                        <div className="text-right flex flex-col items-end min-w-0">
+                          <span className="text-xs font-black text-green-500 font-sans truncate max-w-[140px]">
+                            {grindStats.lastWorkoutDate || "-"}
                           </span>
+                          {grindStats.lastWorkoutTitle && (
+                            <span className="text-[8px] font-bold text-dark-text-muted uppercase tracking-tight truncate max-w-[140px] mt-0.5 leading-none">
+                              {grindStats.lastWorkoutTitle}
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -2258,7 +2453,15 @@ export default function App() {
                   onClearInitialMessage={() => setChatInitialMessage("")}
                 />
               )}
-              {activeView === "Research" && <ResearchView />}
+              {activeView === "Research" && (
+                <ResearchView
+                  isAdmin={isAdmin}
+                  researchPapers={researchPapers}
+                  onAddPaper={handleAddResearchPaper}
+                  onUpdatePaper={handleUpdateResearchPaper}
+                  onDeletePaper={handleDeleteResearchPaper}
+                />
+              )}
               {activeView === "Accounts" && (
                 <AccountsView
                   gasUrl={gasUrl}
@@ -2655,6 +2858,10 @@ function WeeklyView({
         const daySessions = sessions.filter((s: WorkoutSession) =>
           isSameDay(s.startTime, day),
         );
+        const now = new Date();
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+        const isPast = dayStart.getTime() < todayStart.getTime();
         return (
           <div key={dIdx} className="space-y-6">
             <div className="flex items-center gap-6 px-4">
@@ -2667,7 +2874,7 @@ function WeeklyView({
                 </h4>
               </div>
               <div className="h-[1px] flex-1 bg-gradient-to-r from-dark-border to-transparent"></div>
-              {daySessions.length > 0 && (
+              {daySessions.length > 0 && !isPast && (
                 <div className="bg-orange-500/10 text-orange-500 px-4 py-1 rounded-full text-[10px] font-black border border-orange-500/20 uppercase tracking-widest animate-pulse">
                   {daySessions.length} SESSIONS ACTIVE
                 </div>
@@ -2733,6 +2940,12 @@ function SessionCard({
   const isFull =
     (session.participants || []).length >= session.capacity && !isJoined;
   const currentFocus = session.participantFocus?.[effectiveUserId];
+  const sessionDate = session.startTime instanceof Date ? session.startTime : new Date(session.startTime);
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sessionDateStart = new Date(sessionDate.getFullYear(), sessionDate.getMonth(), sessionDate.getDate());
+  const isPastDate = sessionDateStart.getTime() < todayStart.getTime();
+  const isPastOrActive = sessionDateStart.getTime() <= todayStart.getTime();
 
   useEffect(() => {
     if (isFocused && cardRef.current) {
@@ -2755,9 +2968,11 @@ function SessionCard({
         borderTopColor: getColorForSession(session),
       }}
       className={`group relative bg-[#1c1e26] border border-t-[4px] rounded-[32px] lg:rounded-[40px] p-6 lg:p-8 transition-all hover:bg-[#232630] overflow-hidden shadow-2xl ${
-        isFocused
-          ? "ring-2 ring-brand-primary/50 border-brand-primary"
-          : "border-dark-border"
+        isPastDate
+          ? "opacity-55 saturate-50 border-dark-border/40 cursor-not-allowed"
+          : isFocused
+            ? "ring-2 ring-brand-primary/50 border-brand-primary"
+            : "border-dark-border"
       }`}
     >
       {/* Indicator Bar */}
@@ -2900,16 +3115,25 @@ function SessionCard({
                 </span>
               </span>
               <span className="text-[10px] font-bold text-orange-500/80 uppercase tracking-widest mt-1">
-                {isFull
-                  ? "LOCKDOWN"
-                  : isJoined
-                    ? "YOU'RE IN THE SQUAD"
-                    : "JOIN THE CREW!"}
+                {isPastDate
+                  ? "COMPLETED WORKOUT (VIEW ONLY)"
+                  : isFull
+                    ? "LOCKDOWN"
+                    : isJoined
+                      ? "YOU'RE IN THE SQUAD"
+                      : "JOIN THE CREW!"}
               </span>
             </div>
           </div>
 
-          {!isCreator ? (
+          {isPastDate ? (
+            <button
+              disabled
+              className="flex items-center gap-2 px-4 sm:px-8 py-3 rounded-2xl font-black text-[10px] sm:text-xs bg-dark-surface border border-dark-border text-dark-text-muted cursor-not-allowed whitespace-nowrap w-full sm:w-auto justify-center"
+            >
+              COMPLETED
+            </button>
+          ) : !isCreator ? (
             <button
               disabled={isFull && !isJoined}
               onClick={() => onJoin(session)}
@@ -2951,7 +3175,7 @@ function SessionCard({
                       EDIT
                     </button>
                   )}
-                  {onDelete && (
+                  {onDelete && !isPastOrActive && (
                     <button
                       onClick={() => setShowConfirmDelete(true)}
                       className="px-6 py-3 rounded-2xl font-black text-xs transition-all bg-red-500/10 text-red-500 border border-red-500/20 hover:bg-red-500 hover:text-white"
@@ -3082,6 +3306,7 @@ function SessionCard({
 
               {onComment &&
                 isJoined &&
+                !isPastDate &&
                 (session.comments?.filter((c) => c.userId === effectiveUserId)
                   ?.length || 0) < 4 && (
                   <form
@@ -3110,6 +3335,11 @@ function SessionCard({
                     </button>
                   </form>
                 )}
+              {isPastDate && (
+                <div className="text-center py-2 bg-dark-bg/40 border border-dark-border/20 rounded-xl">
+                  <span className="text-[10px] font-bold text-dark-text-muted/60 uppercase tracking-wider">Comms locked for historical workouts</span>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -3191,6 +3421,11 @@ function MonthView({
           const isToday = isSameDay(day, new Date());
           const isSelected = isSameDay(day, selectedDate);
           const isCurrentMonth = isSameMonth(day, currentDate);
+          
+          const now = new Date();
+          const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+          const isPast = dayStart.getTime() < todayStart.getTime();
 
           return (
             <div
@@ -3211,7 +3446,7 @@ function MonthView({
                   {format(day, "d")}
                 </span>
 
-                {daySessions.length > 0 && isCurrentMonth && (
+                {daySessions.length > 0 && isCurrentMonth && !isPast && (
                   <div className="flex -space-x-1 lg:hidden">
                     <div className="w-1.5 h-1.5 rounded-full bg-brand-primary shadow-sm border border-dark-bg"></div>
                   </div>
@@ -3438,6 +3673,11 @@ function DailyView({
     isSameDay(s.startTime, selectedDate),
   );
 
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const selectedDateStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+  const isPast = selectedDateStart.getTime() < todayStart.getTime();
+
   return (
     <div className="space-y-10">
       <div className="flex items-center justify-between">
@@ -3445,7 +3685,7 @@ function DailyView({
           {format(selectedDate, "EEEE, MMM do")}
         </h2>
         <span className="bg-brand-primary/10 text-brand-primary px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-[0.2em]">
-          {daySessions.length} ACTIVE SESSIONS
+          {daySessions.length} {isPast ? "COMPLETED SESSIONS" : "ACTIVE SESSIONS"}
         </span>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
@@ -4072,67 +4312,309 @@ function NutritionView() {
   );
 }
 
-function ResearchView() {
+function ResearchView({
+  isAdmin,
+  researchPapers = [],
+  onAddPaper,
+  onUpdatePaper,
+  onDeletePaper,
+}: {
+  isAdmin: boolean;
+  researchPapers: any[];
+  onAddPaper?: (paper: any) => Promise<void>;
+  onUpdatePaper?: (paper: any) => Promise<void>;
+  onDeletePaper?: (id: string) => Promise<void>;
+}) {
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [editingPaper, setEditingPaper] = useState<any | null>(null);
+  const [formData, setFormData] = useState({
+    title: "",
+    author: "",
+    date: "",
+    url: "",
+    summary: "",
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeTab, setActiveTab] = useState<string | null>(null);
+
+  const handleOpenAdd = () => {
+    setEditingPaper(null);
+    setFormData({ title: "", author: "", date: "", url: "", summary: "" });
+    setIsFormOpen(true);
+  };
+
+  const handleOpenEdit = (paper: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingPaper(paper);
+    setFormData({
+      title: paper.title || "",
+      author: paper.author || "",
+      date: paper.date || "",
+      url: paper.url || "",
+      summary: paper.summary || "",
+    });
+    setIsFormOpen(true);
+  };
+
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm("Are you sure you want to delete this research paper?")) return;
+    try {
+      if (onDeletePaper) await onDeletePaper(id);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.title || !formData.author || !formData.date) {
+      alert("Please fill in Title, Author, and Date.");
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      if (editingPaper) {
+        if (onUpdatePaper) {
+          await onUpdatePaper({
+            id: editingPaper.id,
+            ...formData,
+          });
+        }
+      } else {
+        if (onAddPaper) {
+          await onAddPaper(formData);
+        }
+      }
+      setIsFormOpen(false);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
-    <div className="space-y-12 pb-24">
+    <div className="space-y-12 pb-24 font-sans">
       <div className="bg-dark-surface border border-dark-border rounded-[40px] p-8 lg:p-12 relative overflow-hidden shadow-2xl">
         <div className="absolute top-0 left-0 w-full h-[6px] bg-brand-primary"></div>
-        <div className="max-w-3xl">
-          <h2 className="text-4xl lg:text-5xl font-black tracking-tighter uppercase mb-6 leading-none">
-            The Science of Strength
-          </h2>
-          <p className="text-lg text-dark-text-muted font-medium mb-10 leading-relaxed italic">
-            "Knowledge is only potential power. Execution is the actual power."
-          </p>
+        <div className="max-w-3xl flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+          <div>
+            <h2 className="text-4xl lg:text-5xl font-black tracking-tighter uppercase mb-3 leading-none text-white">
+              The Science of Strength
+            </h2>
+            <p className="text-sm lg:text-base text-dark-text-muted font-medium leading-relaxed italic">
+              "Knowledge is only potential power. Execution is the actual power."
+            </p>
+          </div>
+          {isAdmin && (
+            <button
+              onClick={handleOpenAdd}
+              className="px-5 py-3 hover:scale-102 active:scale-98 bg-brand-primary hover:bg-brand-primary-light text-white font-black text-xs uppercase tracking-widest rounded-2xl flex items-center gap-2 self-start md:self-center transition-all shadow-lg shadow-brand-primary/20"
+            >
+              <Plus size={14} /> Add Paper
+            </button>
+          )}
         </div>
       </div>
+
+      {isFormOpen && (
+        <div className="bg-dark-surface border border-dark-border rounded-[32px] p-6 lg:p-8 shadow-2xl animate-in fade-in slide-in-from-top-4 duration-300">
+          <div className="flex items-center justify-between mb-6 pb-4 border-b border-dark-border/40">
+            <h3 className="text-lg font-black uppercase tracking-wider text-white">
+              {editingPaper ? "Edit Research Paper" : "Add New Research Paper"}
+            </h3>
+            <button
+              onClick={() => setIsFormOpen(false)}
+              className="p-1.5 rounded-lg text-dark-text-muted hover:text-white hover:bg-dark-surface-lighter transition-all"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-2 space-y-1.5">
+                <label className="text-[10px] font-black uppercase tracking-wider text-dark-text-muted">
+                  Paper Title
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.title}
+                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                  placeholder="e.g. Hypertrophy Mechanisms"
+                  className="w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-brand-primary/50"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase tracking-wider text-dark-text-muted">
+                  Publication Date / Year
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.date}
+                  onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                  placeholder="e.g. 2024"
+                  className="w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-brand-primary/50"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase tracking-wider text-dark-text-muted">
+                  Author(s)
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.author}
+                  onChange={(e) => setFormData({ ...formData, author: e.target.value })}
+                  placeholder="e.g. Schoenfeld et al."
+                  className="w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-brand-primary/50"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase tracking-wider text-dark-text-muted">
+                  Source Link URL (Optional)
+                </label>
+                <input
+                  type="url"
+                  value={formData.url || ""}
+                  onChange={(e) => setFormData({ ...formData, url: e.target.value })}
+                  placeholder="e.g. https://journals.lww.com/..."
+                  className="w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-brand-primary/50"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black uppercase tracking-wider text-dark-text-muted">
+                Summary / Abstract Summary (Optional)
+              </label>
+              <textarea
+                value={formData.summary}
+                onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
+                placeholder="Brief summary of key training, volume, frequency, or hypertrophy takeaways..."
+                rows={3}
+                className="w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-brand-primary/50 resize-none font-sans"
+              />
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4">
+              <button
+                type="button"
+                onClick={() => setIsFormOpen(false)}
+                className="px-5 py-2.5 font-bold text-xs uppercase tracking-wider text-dark-text-muted hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="px-6 py-2.5 bg-brand-primary text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-brand-primary-light disabled:opacity-50 transition-colors flex items-center gap-2"
+              >
+                {isSubmitting && <Loader2 className="animate-spin text-white shrink-0" size={12} />}
+                {editingPaper ? "Save Changes" : "Publish Paper"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         <div className="space-y-6">
           <h3 className="text-xs font-black uppercase tracking-[0.3em] text-brand-primary px-4">
             Latest Research Papers
           </h3>
-          {[
-            {
-              title: "Hypertrophy Mechanisms",
-              author: "Schoenfeld et al.",
-              date: "2024",
-            },
-            {
-              title: "Volume vs Intensity Meta-Analysis",
-              author: "Nuckols et al.",
-              date: "2023",
-            },
-            {
-              title: "The Anabolic Window Myth",
-              author: "Aragon/Helms",
-              date: "2024",
-            },
-          ].map((paper) => (
-            <div
-              key={paper.title}
-              className="bg-dark-surface border border-dark-border p-6 rounded-[32px] hover:border-brand-primary/40 transition-all flex items-center justify-between group shadow-lg"
-            >
-              <div className="overflow-hidden">
-                <h4 className="text-sm font-black uppercase tracking-tighter group-hover:text-brand-primary transition-colors truncate">
-                  {paper.title}
-                </h4>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-[10px] font-bold text-dark-text-muted">
-                    {paper.author}
-                  </span>
-                  <div className="w-1 h-1 rounded-full bg-dark-border"></div>
-                  <span className="text-[10px] font-bold text-dark-text-muted">
-                    {paper.date}
-                  </span>
+          <div className="space-y-4">
+            {researchPapers.map((paper) => {
+              const isExpanded = activeTab === paper.id;
+              return (
+                <div
+                  key={paper.id}
+                  onClick={() => setActiveTab(isExpanded ? null : paper.id)}
+                  className="bg-dark-surface border border-dark-border p-6 rounded-[32px] hover:border-brand-primary/40 cursor-pointer transition-all flex flex-col gap-3 group shadow-lg"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="overflow-hidden min-w-0">
+                      <h4 className="text-sm font-black uppercase tracking-tighter group-hover:text-brand-primary transition-colors truncate">
+                        {paper.title}
+                      </h4>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] font-bold text-dark-text-muted truncate max-w-[120px]">
+                          {paper.author}
+                        </span>
+                        <div className="w-1 h-1 rounded-full bg-dark-border shrink-0"></div>
+                        <span className="text-[10px] font-bold text-dark-text-muted shrink-0">
+                          {paper.date}
+                        </span>
+                        {paper.url && (
+                          <>
+                            <div className="w-1 h-1 rounded-full bg-dark-border shrink-0"></div>
+                            <a
+                              href={paper.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-[10px] font-bold text-brand-primary hover:underline flex items-center gap-1 shrink-0"
+                            >
+                              Source <BookOpen size={10} />
+                            </a>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isAdmin && (
+                        <>
+                          <button
+                            onClick={(e) => handleOpenEdit(paper, e)}
+                            className="p-1.5 rounded-lg text-dark-text-muted hover:text-white hover:bg-dark-surface-lighter transition-all"
+                            title="Edit paper"
+                          >
+                            <Edit size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => handleDelete(paper.id, e)}
+                            className="p-1.5 rounded-lg text-dark-text-muted hover:text-red-500 hover:bg-red-500/10 transition-all"
+                            title="Delete paper"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </>
+                      )}
+                      <BookOpen
+                        size={16}
+                        className="text-dark-text-muted group-hover:text-white ml-1 transition-colors"
+                      />
+                    </div>
+                  </div>
+
+                  {paper.summary && (
+                    <div className={`mt-2 text-xs text-dark-text-muted leading-relaxed font-sans overflow-hidden transition-all duration-300 ${isExpanded ? "max-h-[200px] opacity-100" : "max-h-0 opacity-0 mb-[-12px]"}`}>
+                      <div className="p-3 bg-dark-bg border border-dark-border/40 rounded-xl">
+                        <div className="text-[9px] font-black uppercase text-brand-primary tracking-widest mb-1">
+                          Key Abstract Takeaways
+                        </div>
+                        {paper.summary}
+                      </div>
+                    </div>
+                  )}
                 </div>
+              );
+            })}
+            {researchPapers.length === 0 && (
+              <div className="text-center py-12 text-sm text-dark-text-muted italic border border-dashed border-dark-border rounded-[32px]">
+                No research papers logged. Check settings or load from master list.
               </div>
-              <BookOpen
-                size={18}
-                className="text-dark-text-muted group-hover:text-white"
-              />
-            </div>
-          ))}
+            )}
+          </div>
         </div>
 
         <div className="space-y-6">
