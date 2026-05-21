@@ -368,7 +368,12 @@ export default function App() {
       return [];
     } catch { return []; }
   });
-  const [templates, setTemplates] = useState<WorkoutTemplate[]>([]);
+  const [templates, setTemplates] = useState<WorkoutTemplate[]>(() => {
+    try {
+      const stored = localStorage.getItem('flexsync_templates');
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
   const [weightEntries, setWeightEntries] = useState<WeightEntry[]>(() => {
     try {
       const storedV2 = localStorage.getItem('flexsync_weights_v2');
@@ -402,23 +407,10 @@ export default function App() {
   const handleGasAction = async (action: string, data: any) => {
     if (!gasUrl) return { success: false, message: 'Google Sheet Sync not configured' };
     try {
-      const response = await fetch(gasUrl, {
-        method: 'POST',
-        mode: 'no-cors', // Standard for GAS Web App proxy, though result will be opaque
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ action, data }),
-      });
-      // Note: GAS CORS with 'no-cors' means we can't read the response directly if it's cross-origin
-      // without proper CORS setup. To get responses, we usually use JSONP or a slightly different setup.
-      // But for simple "log and forget" it works. 
-      // Better way: The user publishes GAS as 'Anyone', and we use simple fetch (non-opaque if possible)
-      
-      // Let's assume a transparent fetch if the user set it up right
+      // Use text/plain and a single request to bypass OPTIONS preflight checks perfectly with GAS redirections
       const resp = await fetch(gasUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' }, // GAS prefers this for CORS sometimes
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify({ action, data }),
       });
       return await resp.json();
@@ -652,6 +644,10 @@ export default function App() {
     if (!db || !authReady) return;
     
     let unsubscribeSessions = () => {};
+    let unsubscribeTemp = () => {};
+    let unsubscribePrs = () => {};
+    let unsubscribeWeight = () => {};
+    
     const isFirebaseDummy = !db || db.app.options.apiKey.includes('dummy');
 
     // Only listen to Firestore if NOT using Google Sheets as primary
@@ -671,52 +667,54 @@ export default function App() {
         }, (error) => console.error("Firestore read error:", error));
     }
 
-    const fetchId = user?.uid || 'guest_user';
-    const qTemp = query(collection(db, `users/${fetchId}/templates`));
-    const unsubscribeTemp = onSnapshot(qTemp, (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as WorkoutTemplate));
-      setTemplates(docs);
-    });
-
-    const qPrs = query(collection(db, `users/${fetchId}/prs`));
-    const unsubscribePrs = onSnapshot(qPrs, (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PersonalRecord));
-      setPrs(docs);
-    });
-
-    const qWeight = query(collection(db, `users/${fetchId}/weight_entries`), orderBy('date', 'desc'));
-    const unsubscribeWeight = onSnapshot(qWeight, (snapshot) => {
-        const docs = snapshot.docs.map(doc => {
-            const data = doc.data();
-            return {
-                id: doc.id,
-                ...data,
-                date: data.date instanceof Timestamp ? data.date.toDate() : new Date(data.date)
-            } as WeightEntry;
+    if (!isFirebaseDummy) {
+        const fetchId = user?.uid || 'guest_user';
+        const qTemp = query(collection(db, `users/${fetchId}/templates`));
+        unsubscribeTemp = onSnapshot(qTemp, (snapshot) => {
+          const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as WorkoutTemplate));
+          setTemplates(docs);
         });
-        
-        if (!useGoogleSheets && !isFirebaseDummy) {
-            setWeightEntries(prev => {
-                const local = [...prev];
-                docs.forEach(d => { 
-                    const dTime = d.date.getTime();
-                    const existingIdx = local.findIndex(l => {
-                        const lTime = l.date instanceof Date ? l.date.getTime() : new Date(l.date).getTime();
-                        return l.id === d.id || (Math.abs(lTime - dTime) < 300000 && Math.abs(l.value - d.value) < 0.01);
-                    });
-                    
-                    if (existingIdx === -1) {
-                        local.push(d); 
-                    } else {
-                        local[existingIdx] = { ...local[existingIdx], ...d };
-                    }
-                });
-                const result = local.sort((a,b) => b.date.getTime() - a.date.getTime());
-                localStorage.setItem('flexsync_weights_v3', JSON.stringify(result));
-                return result;
+
+        const qPrs = query(collection(db, `users/${fetchId}/prs`));
+        unsubscribePrs = onSnapshot(qPrs, (snapshot) => {
+          const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PersonalRecord));
+          setPrs(docs);
+        });
+
+        const qWeight = query(collection(db, `users/${fetchId}/weight_entries`), orderBy('date', 'desc'));
+        unsubscribeWeight = onSnapshot(qWeight, (snapshot) => {
+            const docs = snapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                    id: doc.id,
+                    ...data,
+                    date: data.date instanceof Timestamp ? data.date.toDate() : new Date(data.date)
+                } as WeightEntry;
             });
-        }
-    });
+            
+            if (!useGoogleSheets) {
+                setWeightEntries(prev => {
+                    const local = [...prev];
+                    docs.forEach(d => { 
+                        const dTime = d.date.getTime();
+                        const existingIdx = local.findIndex(l => {
+                            const lTime = l.date instanceof Date ? l.date.getTime() : new Date(l.date).getTime();
+                            return l.id === d.id || (Math.abs(lTime - dTime) < 300000 && Math.abs(l.value - d.value) < 0.01);
+                        });
+                        
+                        if (existingIdx === -1) {
+                            local.push(d); 
+                        } else {
+                            local[existingIdx] = { ...local[existingIdx], ...d };
+                        }
+                    });
+                    const result = local.sort((a,b) => b.date.getTime() - a.date.getTime());
+                    localStorage.setItem('flexsync_weights_v3', JSON.stringify(result));
+                    return result;
+                });
+            }
+        });
+    }
 
     return () => {
         unsubscribeSessions();
@@ -829,16 +827,36 @@ export default function App() {
           }
       }
 
-      if (!editingSessionId && formData.saveAsTemplate && user) { // Only save templates for real users
-        await addDoc(collection(db, `users/${user.uid}/templates`), {
-          userId: user.uid,
+      if (!editingSessionId && formData.saveAsTemplate) {
+        const isFirebaseDummy = !db || db.app.options.apiKey.includes('dummy');
+        const newTemplate: WorkoutTemplate = {
+          id: 'template_' + Date.now(),
+          userId: effectiveUserId,
           title: formData.title,
           description: formData.description,
           location: formData.location,
           bodyParts: formData.bodyParts,
           capacity: formData.capacity,
           color
-        });
+        };
+
+        if (isFirebaseDummy) {
+          setTemplates(prev => {
+            const nextTemplates = [newTemplate, ...prev];
+            localStorage.setItem('flexsync_templates', JSON.stringify(nextTemplates));
+            return nextTemplates;
+          });
+        } else if (user) {
+          await addDoc(collection(db, `users/${user.uid}/templates`), {
+            userId: user.uid,
+            title: formData.title,
+            description: formData.description,
+            location: formData.location,
+            bodyParts: formData.bodyParts,
+            capacity: formData.capacity,
+            color
+          });
+        }
       }
 
       resetForm();
@@ -3327,8 +3345,37 @@ function LoginScreen({ onCodeLogin, gasUrl, useGoogleSheets }: { onCodeLogin: (u
     if (!code) return;
     setLoading(true);
     setError('');
+
+    const normalizedCode = code.trim().toUpperCase();
+
+    // 1. SPECIAL ADMIN CODE OVERRIDE FIRST (so administrators can always bypass a blank/unconfigured sheets URL and update settings)
+    if (normalizedCode === '011426') {
+      try {
+        let authUser;
+        try {
+          const authResult = await signInAnonymously(auth);
+          authUser = authResult.user;
+        } catch (authErr) {
+          console.warn("Auth failed, using mock admin", authErr);
+          authUser = { uid: 'admin_override' };
+        }
+        
+        onCodeLogin({
+          uid: authUser.uid,
+          displayName: 'Root Admin',
+          role: 'admin',
+          code: '011426'
+        });
+        return;
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
     
-    // 0. CHECK GOOGLE SHEET SYNC FIRST
+    // 2. CHECK GOOGLE SHEET SYNC NEXT
     const isFirebaseDummy = !db || db.app.options.apiKey.includes('dummy');
     const isUsingGoogleSheets = (useGoogleSheets || isFirebaseDummy) && gasUrl;
     
@@ -3337,7 +3384,7 @@ function LoginScreen({ onCodeLogin, gasUrl, useGoogleSheets }: { onCodeLogin: (u
         const resp = await fetch(gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'validate', data: { code: code.toUpperCase() } }),
+          body: JSON.stringify({ action: 'validate', data: { code: normalizedCode } }),
         });
         
         if (!resp.ok) {
@@ -3367,33 +3414,6 @@ function LoginScreen({ onCodeLogin, gasUrl, useGoogleSheets }: { onCodeLogin: (u
         setLoading(false);
         return;
       }
-    }
-
-    // Special admin code override
-    if (code === '011426') {
-      try {
-        let authUser;
-        try {
-          const authResult = await signInAnonymously(auth);
-          authUser = authResult.user;
-        } catch (authErr) {
-          console.warn("Auth failed, using mock admin", authErr);
-          authUser = { uid: 'admin_override' };
-        }
-        
-        onCodeLogin({
-          uid: authUser.uid,
-          displayName: 'Root Admin',
-          role: 'admin',
-          code: '011426'
-        });
-        return;
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-      return;
     }
 
     try {
